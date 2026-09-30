@@ -70,7 +70,7 @@ jobs:
         image: postgres:16-alpine
         env:
           POSTGRES_USER: tally
-          POSTGRES_PASSWORD: tally_secret
+          POSTGRES_PASSWORD: tally_local_dev
           POSTGRES_DB: tally
         ports: ["5439:5432"]
         options: >-
@@ -124,7 +124,7 @@ jobs:
 
       - name: Load Postgres schema
         run: |
-          PGPASSWORD=tally_secret psql -h localhost -p 5439 -U tally -d tally \
+          PGPASSWORD=tally_local_dev psql -h localhost -p 5439 -U tally -d tally \
             -f src/tally/adapters/store/schema.sql
 
       - name: Integration tests
@@ -132,6 +132,8 @@ jobs:
         # locally and wrong here: a misconfigured service block would report a
         # green job having run nothing. So the run is captured and an all-skipped
         # result is turned into a failure.
+        env:
+          TALLY_PG_PASSWORD: tally_local_dev
         run: |
           set -o pipefail
           pytest tests/integration -q -m integration -rs 2>&1 | tee /tmp/integration.log

@@ -115,6 +115,8 @@ addopts = [
 filterwarnings = [
     "error",
     "ignore:.*unclosed.*:ResourceWarning",
+    "ignore:.*loop is closed.*:ResourceWarning",
+    "ignore:.*Exception ignored in.*:pytest.PytestUnraisableExceptionWarning",
 ]
 
 [tool.coverage.run]
