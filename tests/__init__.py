@@ -1,0 +1,1 @@
+"""Tally test suite."""

@@ -1,0 +1,15 @@
+# Never ship the build context's junk, and never let a host-built node_modules
+# (resolved against a different registry and a different libc) into the image.
+.git
+.venv
+node_modules
+web/node_modules
+**/__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+bench/results
+docs
+*.md
+!README.md

@@ -1,0 +1,233 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A second push to the same branch supersedes the first; cancel the older run
+# rather than paying for a result nobody will read.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_DEFAULT: "3.12"
+
+jobs:
+  # ---------------------------------------------------------------- quality
+  # The five gates that must hold on every commit. Each is a separate step so a
+  # failure names the gate that broke instead of "the build".
+  quality:
+    name: lint · types · architecture · unit tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest pytest-asyncio pytest-cov ruff mypy import-linter
+
+      - name: Lint
+        run: ruff check src tests bench
+
+      - name: Format check
+        run: ruff format --check src tests bench
+
+      - name: Types
+        run: mypy
+
+      - name: Architecture contracts
+        # The dependency rule is enforced here, not by convention. A domain
+        # module that imports an adapter fails the build.
+        run: lint-imports
+
+      - name: Unit tests
+        run: pytest -q -m "not integration" --cov=tally --cov-report=term-missing
+
+  # ---------------------------------------------------------------- integration
+  # Runs against real Redpanda, Postgres and Redis. Separate job because it is
+  # slow and needs services; separate so a red integration run is unambiguous
+  # rather than hidden inside a general test failure.
+  integration:
+    name: integration (Redpanda · Postgres · Redis)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: tally
+          POSTGRES_PASSWORD: tally_secret
+          POSTGRES_DB: tally
+        ports: ["5439:5432"]
+        options: >-
+          --health-cmd "pg_isready -U tally -d tally"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports: ["6389:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_DEFAULT }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest pytest-asyncio pytest-cov
+
+      - name: Start Redpanda
+        # Not a service container: Redpanda needs its start arguments, which the
+        # `services:` block cannot express.
+        run: |
+          docker run -d --name redpanda -p 19092:19092 \
+            docker.redpanda.com/redpandadata/redpanda:v24.1.8 \
+            redpanda start --smp 1 --memory 512M --overprovisioned \
+            --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092 \
+            --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+
+      - name: Wait for Redpanda
+        run: |
+          for i in $(seq 1 30); do
+            if docker exec redpanda rpk cluster info >/dev/null 2>&1; then
+              echo "Redpanda ready after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "Redpanda did not become ready"; docker logs redpanda; exit 1
+
+      - name: Load Postgres schema
+        run: |
+          PGPASSWORD=tally_secret psql -h localhost -p 5439 -U tally -d tally \
+            -f src/tally/adapters/store/schema.sql
+
+      - name: Integration tests
+        # The suite skips itself when the stack is unreachable, which is right
+        # locally and wrong here: a misconfigured service block would report a
+        # green job having run nothing. So the run is captured and an all-skipped
+        # result is turned into a failure.
+        run: |
+          set -o pipefail
+          pytest tests/integration -q -m integration -rs 2>&1 | tee /tmp/integration.log
+          if grep -qE '[0-9]+ skipped' /tmp/integration.log; then
+            echo "::error::Integration tests were skipped - the stack was not reachable."
+            exit 1
+          fi
+          if ! grep -qE '[0-9]+ passed' /tmp/integration.log; then
+            echo "::error::No integration tests ran."
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------- web
+  web:
+    name: web build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Guard against a non-public registry in the lockfile
+        # A lockfile generated behind a corporate npm mirror pins every
+        # dependency to an internal host: it leaks the hostname and the install
+        # fails for everyone outside that network, presenting as a long hang
+        # that appears to blame npm. Cheap to check, expensive to debug.
+        run: |
+          if grep -oE '"resolved": "https?://[^/"]+' package-lock.json \
+             | grep -v 'registry.npmjs.org' | sort -u | grep . ; then
+            echo "::error::package-lock.json references a non-public registry."
+            exit 1
+          fi
+          echo "All resolved URLs point at registry.npmjs.org"
+
+      - run: npm ci
+      - run: npm run build
+
+  # ---------------------------------------------------------------- docker
+  docker:
+    name: image builds and serves
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t tally:ci .
+
+      - name: Smoke test
+        # `docker run ... ; echo $?` reports the echo's status, not the
+        # container's. Every step here is chained so a failure actually fails.
+        run: |
+          docker run -d --name tally-smoke -p 8080:8080 \
+            -e TALLY_ENV=test tally:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8080/v1/health >/dev/null 2>&1; then
+              echo "healthy after ${i}s"
+              docker rm -f tally-smoke
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "container never became healthy"
+          docker logs tally-smoke
+          exit 1
+
+  # ---------------------------------------------------------------- secrets
+  secrets:
+    name: no personal data or credentials
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for personal data
+        # This repository is public and was built from a private working
+        # directory. A grep is not a guarantee, but it catches the paste.
+        run: |
+          if grep -rIn --exclude-dir=.git --exclude-dir=node_modules \
+               -E '(ghp_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' . ; then
+            echo "::error::Possible credential found."
+            exit 1
+          fi
+          echo "No credential patterns found."
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,74 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Testing and coverage
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.tox/
+.nox/
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+
+# Type checking & linting
+.mypy_cache/
+.ruff_cache/
+.import_linter_cache/
+
+# Environment variables
+.env
+!.env.example
+
+# Node / Web
+web/node_modules/
+web/dist/
+web/.vite/
+
+# Database files & logs
+*.log
+*.sqlite3
+data/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Session handoff notes. Local working context only — contains employer and
+# personal details that must not reach a public repository.
+CONTEXT.md

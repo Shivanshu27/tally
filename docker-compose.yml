@@ -1,0 +1,83 @@
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.1.8
+    container_name: tally-redpanda
+    command:
+      - redpanda start
+      - --smp 1
+      - --memory 512M
+      - --overprovisioned
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:${TALLY_REDPANDA_PORT:-19092}
+      - --pandaproxy-addr 0.0.0.0:8082
+      - --advertise-pandaproxy-addr localhost:8082
+    ports:
+      - "${TALLY_REDPANDA_PORT:-19092}:19092"
+      - "8082:8082"
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster info || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: tally-postgres
+    environment:
+      POSTGRES_USER: ${TALLY_PG_USER:-tally}
+      POSTGRES_PASSWORD: ${TALLY_PG_PASSWORD:-tally_local_dev}
+      POSTGRES_DB: ${TALLY_PG_DB:-tally}
+    ports:
+      - "${TALLY_PG_PORT:-5439}:5432"
+    volumes:
+      - tally_pg_data:/var/lib/postgresql/data
+      - ./src/tally/adapters/store/schema.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TALLY_PG_USER:-tally} -d ${TALLY_PG_DB:-tally}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: tally-redis
+    command: redis-server --appendonly no --save ""
+    ports:
+      - "${TALLY_REDIS_PORT:-6389}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # The application itself. Kept in a profile so the default
+  # `docker compose up -d` starts only the dependencies -- which is what the
+  # test suite and the benchmarks need, and what a developer running the API
+  # from their own shell wants. `--profile app` brings up the whole system.
+  app:
+    build:
+      context: .
+    container_name: tally-app
+    profiles: ["app"]
+    ports:
+      - "${TALLY_API_PORT:-8080}:8080"
+    environment:
+      TALLY_ENV: ${TALLY_ENV:-development}
+      TALLY_KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+      TALLY_PG_HOST: postgres
+      TALLY_PG_PORT: 5432
+      TALLY_PG_USER: ${TALLY_PG_USER:-tally}
+      TALLY_PG_PASSWORD: ${TALLY_PG_PASSWORD:-tally_local_dev}
+      TALLY_PG_DB: ${TALLY_PG_DB:-tally}
+      TALLY_REDIS_HOST: redis
+      TALLY_REDIS_PORT: 6379
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  tally_pg_data:

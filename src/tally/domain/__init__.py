@@ -1,0 +1,1 @@
+"""Tally pure domain layer."""
