@@ -67,8 +67,8 @@ Both columns measured in the same process on the same machine.
 
    **Drift from pipeline lag is the real number.** The counter reflects every
    admitted event; the exact aggregate reflects only sealed windows. With three
-   fifths of the events sealed, enforcement sees 40% more usage than billing
-   does -- correctly, because enforcement must not under-count while a backlog
+   fifths of the events sealed, enforcement sees 66.67% more usage than billing
+   does (billing sees 40% less) -- correctly, because enforcement must not under-count while a backlog
    drains. This is the bound that matters, and it is a property of lag, not of
    floating point.
 
